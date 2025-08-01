@@ -1,0 +1,318 @@
+name: 🚀 CI/CD Pipeline - Bazari Marketplace
+
+on:
+  push:
+    branches: [main, develop, staging]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  NODE_VERSION: '18'
+  PNPM_VERSION: '8'
+
+jobs:
+  # 🧪 Code Quality & Testing
+  test:
+    name: 🧪 Tests & Code Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📁 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      
+      - name: 📦 Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      
+      - name: 🎯 Get pnpm store directory
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+      
+      - name: 🗄️ Setup pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+      
+      - name: 📥 Install dependencies
+        run: pnpm install --frozen-lockfile
+      
+      - name: 🔍 Run ESLint
+        run: pnpm lint
+      
+      - name: 🎨 Check Prettier formatting
+        run: pnpm format:check
+      
+      - name: 🏗️ Type check
+        run: pnpm type-check
+      
+      - name: 🧪 Run unit tests
+        run: pnpm test
+        env:
+          NODE_ENV: test
+      
+      - name: 📊 Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage/coverage-final.json
+          fail_ci_if_error: false
+
+  # 🔒 Security Scanning
+  security:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📁 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🔍 Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      
+      - name: 📤 Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+      
+      - name: 🔍 Audit npm dependencies
+        run: npm audit --audit-level high
+
+  # 🏗️ Build Application
+  build:
+    name: 🏗️ Build Application
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    
+    strategy:
+      matrix:
+        environment: [development, staging, production]
+    
+    steps:
+      - name: 📁 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      
+      - name: 📦 Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      
+      - name: 📥 Install dependencies
+        run: pnpm install --frozen-lockfile
+      
+      - name: 🏗️ Build application
+        run: pnpm build
+        env:
+          NODE_ENV: ${{ matrix.environment }}
+          NEXT_TELEMETRY_DISABLED: 1
+          SENTRY_DISABLE_SERVER_WEBPACK_PLUGIN: 1
+      
+      - name: 📦 Create build artifact
+        if: matrix.environment == 'production'
+        run: |
+          tar -czf build-${{ github.sha }}.tar.gz .next public package.json
+      
+      - name: 📤 Upload build artifact
+        if: matrix.environment == 'production'
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifact
+          path: build-${{ github.sha }}.tar.gz
+          retention-days: 30
+
+  # 🐳 Docker Build & Push
+  docker:
+    name: 🐳 Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging'
+    
+    steps:
+      - name: 📁 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🔐 Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      - name: 🏗️ Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: 🏷️ Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: bazari/marketplace
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+      
+      - name: 🏗️ Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NODE_ENV=production
+            NEXT_TELEMETRY_DISABLED=1
+
+  # 🚀 Deploy to Staging
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [docker]
+    if: github.ref == 'refs/heads/staging'
+    environment: staging
+    
+    steps:
+      - name: 📁 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🔧 Deploy to staging
+        run: |
+          echo "Deploying to staging environment..."
+          # Add your deployment commands here
+          # e.g., kubectl, terraform, or cloud provider CLI
+      
+      - name: 🧪 Run smoke tests
+        run: |
+          echo "Running smoke tests against staging..."
+          # Add smoke test commands
+      
+      - name: 💬 Notify team
+        uses: 8398a7/action-slack@v3
+        if: always()
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+  # 🚀 Deploy to Production
+  deploy-production:
+    name: 🚀 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [docker]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+      - name: 📁 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: ⏳ Download build artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: build-artifact
+      
+      - name: 🔧 Deploy to production
+        run: |
+          echo "Deploying to production environment..."
+          # Add your production deployment commands
+      
+      - name: 🔍 Health check
+        run: |
+          echo "Performing health checks..."
+          # Add health check commands
+      
+      - name: 📊 Update Sentry release
+        uses: getsentry/action-release@v1
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        with:
+          environment: production
+          version: ${{ github.sha }}
+      
+      - name: 💬 Notify team
+        uses: 8398a7/action-slack@v3
+        if: always()
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+  # 📊 Performance Testing
+  performance:
+    name: 📊 Performance Testing
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/staging'
+    
+    steps:
+      - name: 📁 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🚀 Run Lighthouse CI
+        uses: treosh/lighthouse-ci-action@v10
+        with:
+          configPath: './lighthouse-ci.json'
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+      
+      - name: 📊 Run WebPageTest
+        run: |
+          echo "Running WebPageTest performance analysis..."
+          # Add WebPageTest API calls
+
+  # 🔄 Database Migration
+  migrate:
+    name: 🔄 Database Migration
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[migrate]')
+    
+    steps:
+      - name: 📁 Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🔄 Run database migrations
+        run: |
+          echo "Running database migrations..."
+          # Add Supabase migration commands
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+
+  # 🧹 Cleanup
+  cleanup:
+    name: 🧹 Cleanup
+    runs-on: ubuntu-latest
+    needs: [deploy-production, deploy-staging]
+    if: always()
+    
+    steps:
+      - name: 🧹 Clean up old artifacts
+        run: |
+          echo "Cleaning up old build artifacts..."
+          # Add cleanup commands
+      
+      - name: 📊 Update deployment metrics
+        run: |
+          echo "Updating deployment metrics..."
+          # Add metrics reporting
