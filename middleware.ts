@@ -4,6 +4,13 @@ import type { NextRequest } from "next/server"
 
 export async function middleware(req: NextRequest) {
   const res = NextResponse.next()
+  
+  // Skip middleware if Supabase is not configured (development mode)
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+    console.warn('Supabase not configured - skipping auth middleware')
+    return res
+  }
+  
   const supabase = createMiddlewareClient({ req, res })
 
   const {

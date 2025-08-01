@@ -12,8 +12,6 @@ try {
 const nextConfig = {
   // Enable experimental features
   experimental: {
-    // Server actions for better performance
-    serverActions: true,
     // Image optimization
     optimizePackageImports: ['lucide-react', '@radix-ui/react-icons'],
   },
